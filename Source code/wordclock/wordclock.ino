@@ -11,8 +11,8 @@
 #include "FastLED.h"
 
 /* Does the LED strip start at the top left letter 'H' or the top right letter 'N'? */
-#define START_N         0         // [-]
-#define START_H         1         // [-]
+#define START_N         1         // [-]
+#define START_H         0         // [-]
                         
 FASTLED_USING_NAMESPACE 
                         
@@ -42,6 +42,7 @@ int hsv_val           = 255;      // [-] - Full brightness is standard value.
 int fps               = 120;      // [frames/s] - The rendering speed (animations)
 int interval          = 1000;     // [ms] - The interval which is mainly used for input debouncing
 int brightness        = 128;      // [-] - LED strip brightness on a scale of 0 to 255
+int brightvar         = 10;       // [-] - Brightness variable
 int frequency_strobe  = 1;        // [Hz] - The frequency of the strobe function
 int strobe_delay      = 30;       // [ms] - The strobe pulse time
 long buttonTime       = 0;        // [ms] - Time at which the button was pressed
@@ -110,7 +111,7 @@ void setup() {
 }
 
 typedef void (*modeList[])();
-modeList gModes = {normal, night, confetti, wave, birthday};
+modeList gModes = {normal, varbright, night, confetti, wave, birthday};
 
 void loop() {
   gModes[gCurrentModeNumber]();
@@ -140,7 +141,7 @@ void nextPattern() {
   FastLED.clear(true);
   gCurrentModeNumber = (gCurrentModeNumber + 1) % ARRAY_SIZE(gModes);
   
-  if(gCurrentModeNumber == 0 || gCurrentModeNumber == 4) { // Normal or birthday
+  if(gCurrentModeNumber == 0 || gCurrentModeNumber == 5) { // Normal or birthday
     FastLED.setBrightness(128);
     digitalWrite(LIGHT_PIN, HIGH);
     fps = 120;
@@ -148,7 +149,16 @@ void nextPattern() {
     hsv_hue = 0;
     displayTime(hsv_hue, hsv_sat, hsv_val);
   }
-  if(gCurrentModeNumber == 1) { // Night
+  if(gCurrentModeNumber == 1) { // varbright
+    FastLED.setBrightness(10);
+    digitalWrite(LIGHT_PIN, LOW);
+    fps = 120;
+    hsv_sat = 0;
+    hsv_hue = 0;
+    brightvar = 10;
+    displayTime(hsv_hue, hsv_sat, hsv_val);
+  }
+  if(gCurrentModeNumber == 2) { // Night
     FastLED.setBrightness(2);
     digitalWrite(LIGHT_PIN, LOW);
     fps = 120;
@@ -156,12 +166,12 @@ void nextPattern() {
     hsv_hue = 0;
     displayTime(hsv_hue, hsv_sat, hsv_val);
   }
-  if(gCurrentModeNumber == 2) { // Confetti
+  if(gCurrentModeNumber == 3) { // Confetti
     FastLED.setBrightness(128);
     digitalWrite(LIGHT_PIN, HIGH);
     fps = 120;
   }
-  if(gCurrentModeNumber == 3) { // Wave
+  if(gCurrentModeNumber == 4) { // Wave
     digitalWrite(LIGHT_PIN, HIGH);
     FastLED.setBrightness(128);
     fps = 120;
@@ -177,7 +187,7 @@ void normal() {
   /* This code displays a rainbow effect on the birthday words 'Fijne verjaardag' */
 
   // Some random birthday examples; set any date or amount
-  if(((month() == 3) && (day() == 7)) || ((month() == 3) && (day() == 12)) || ((month() == 8) && (day() == 2)) || ((month() == 12) && (day() == 28))) {
+  if(((month() == 8) && (day() == 5)) || ((month() == 9) && (day() == 18))) {
     if(START_N) {
       for(i = 38; i >= 34; i--) {
         leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
@@ -245,6 +255,87 @@ void normal() {
   }
 }
 
+void varbright() {
+  if(millis() - updateTime > 5*interval) {
+    displayTime(hsv_hue, hsv_sat, hsv_val);
+    updateTime = millis();
+  }
+  
+  /* This code displays a rainbow effect on the birthday words 'Fijne verjaardag' */
+
+  // Some random birthday examples; set any date or amount
+  if(((month() == 8) && (day() == 5)) || ((month() == 9) && (day() == 18))) {
+    if(START_N) {
+      for(i = 38; i >= 34; i--) {
+        leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
+      }
+      for(i = 65; i >= 55; i--) {
+        leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
+      }
+      j+=2;
+      if(j >= 255*5) {
+        j = 0;
+      }
+    }
+    if(START_H) {
+      for(i = 42; i >= 38; i--) {
+        leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
+      }
+      for(i = 65; i >= 55; i--) {
+        leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
+      }
+      j+=2;
+      if(j >= 255*5) {
+        j = 0;
+      }
+    }
+  }
+
+  /* Wipe the LED matrix once a day to clear birthday messages after the birthday is over */
+  if(hour() == 0 && minute() == 1 && second() == 1) {
+    FastLED.clear();
+  }
+  
+  /* If the colour button is pressed, set brightness values to change LED brightness */
+  if((digitalRead(COL_PIN) == 0) && (millis() - buttonTime > interval*0.05)) {
+    buttonTime = millis();
+    delay(50);
+    if(digitalRead(COL_PIN) == 0) {
+      if(brightvar == 128) {
+        brightvar = 1;
+      } else {
+        brightvar++;
+      }
+      FastLED.setBrightness(brightvar);
+      displayTime(hsv_hue, hsv_sat, hsv_val);
+    }
+  }
+
+  /* Check if the time should be incremented */
+  if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1) && (millis() - buttonTime > interval)) {
+    buttonTime = millis();
+    delay(250);
+    if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1)) {   
+      adjustTime(-((5 + (minute() % 5)) * 60 + second()) + 600);
+      t = now();
+      RTC.set(t);
+      displayTime(hsv_hue, hsv_sat, hsv_val);
+    }
+  }
+
+  /* Check if the time should be decremented */
+  if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0) && (millis() - buttonTime > interval)) {
+    buttonTime = millis();
+    delay(250);
+    if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0)) {
+      adjustTime(-((5 + (minute() % 5)) * 60 + second()));
+      t = now();
+      RTC.set(t);
+      displayTime(hsv_hue, hsv_sat, hsv_val);
+    }
+  }
+}
+
 void night() {
   if(millis() - updateTime > 5*interval) {
     displayTime(hsv_hue, hsv_sat, hsv_val);
@@ -252,7 +343,7 @@ void night() {
   }
 
   /* This code displays a rainbow effect on the birthday words 'Fijne verjaardag' */
-  if(((month() == 5) && (day() == 7)) || ((month() == 3) && (day() == 24)) || ((month() == 3) && (day() == 17)) || ((month() == 9) && (day() == 19))) {
+  if(((month() == 8) && (day() == 5)) || ((month() == 9) && (day() == 18))) {
     if(START_N) {
       for(i = 38; i >= 34; i--) {
         leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
