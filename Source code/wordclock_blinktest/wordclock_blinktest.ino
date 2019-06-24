@@ -14,14 +14,14 @@ void setup() {
 }
 
 void loop() { 
-  for(int i=0; i<122; i++){
+  for(int i=0; i<NUM_LEDS; i++){
     leds[i] = CHSV(0, 0, 255);
     FastLED.show();
     delay(100);
   }
   delay(5000);
   FastLED.clear();
-  for(int i=0; i<122; i++){
+  for(int i=0; i<NUM_LEDS; i++){
     FastLED.clear();
     leds[i] = CHSV(0, 0, 255);
     FastLED.show();

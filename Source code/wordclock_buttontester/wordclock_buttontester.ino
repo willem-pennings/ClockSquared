@@ -19,25 +19,24 @@ void setup() {
 }
 
 void loop() {
-  /* This block of code changes the system time when the buttons are pressed */
-  if((digitalRead(incrementPin) == 0) && (digitalRead(decrementPin) == 1) && (millis() - buttonTime > interval)){
+  if((digitalRead(incrementPin) == 0) && (millis() - buttonTime > interval)){
     buttonTime = millis();
     delay(500);
     if((digitalRead(incrementPin) == 0) && (digitalRead(decrementPin) == 1)) {   
-      Serial.println("Time has been put 5 minutes forward");
+      Serial.println("Registered increment button press");
     }
   }
 
-  if((digitalRead(incrementPin) == 1) && (digitalRead(decrementPin) == 0) && (millis() - buttonTime > interval)){
+  if((digitalRead(incrementPin) == 1) && (millis() - buttonTime > interval)){
     buttonTime = millis();
     delay(500);
     if((digitalRead(incrementPin) == 1) && (digitalRead(decrementPin) == 0)) {
-      Serial.println("Time has been put 5 minutes backwards");
+      Serial.println("Registered decrement button press");
     }
   }
 
-  if((digitalRead(colorPin) == 0) && (millis() - buttonTime > interval*0.5)) {
+  if((digitalRead(colorPin) == 0) && (millis() - buttonTime > interval)) {
     buttonTime = millis();
-    Serial.println("Color incremented!");
+    Serial.println("Registered colour button press");
   }
 }

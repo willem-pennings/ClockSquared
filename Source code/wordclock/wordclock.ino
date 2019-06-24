@@ -1,7 +1,7 @@
 /* ClockSquared by Willem Pennings - My design of the Word Clock.
  * Utilizes LED strips and now features individual control of letters.
  * Copyright (C) 2017 Willem Pennings (willemm.nl)
- * The FastLED library is required to compile this program!
+ * The FastLED and DS1307 RTC library are required to compile this sketch!
  */
 
 /* Libraries */
@@ -19,8 +19,8 @@ FASTLED_USING_NAMESPACE
 /* LED strip and grid definitions */
 #define NUM_LEDS        121       // [-] - The amount of lights on the strip
 #define DATA_PIN        2         // [-] - The Arduino data output pin
-#define CLOCK_PIN       3         // [-] - The Arduino clock output pin
-#define LIGHT_PIN       4         // [-] - LED button transistor light switch pin
+#define CLOCK_PIN       3         // [-] - The Arduino clock output pin (if using a 4-pin LED)
+#define LIGHT_PIN       4         // [-] - LED button transistor light switch pin (optional)
 #define LED_TYPE        APA102    // [-] - The LED strip model
 #define COLOR_ORDER     BGR       // [-] - The LED strip color order
 CRGB leds[NUM_LEDS];  
@@ -41,7 +41,7 @@ int hsv_val           = 255;      // [-] - Full brightness is standard value.
 /* General variables */
 int fps               = 120;      // [frames/s] - The rendering speed (animations)
 int interval          = 1000;     // [ms] - The interval which is mainly used for input debouncing
-int brightness        = 128;      // [-] - LED strip brightness on a scale of 0 to 255
+int brightness        = 128;      // [-] - LED strip global brightness on a scale of 0 to 255
 int brightvar         = 10;       // [-] - Brightness variable
 int frequency_strobe  = 1;        // [Hz] - The frequency of the strobe function
 int strobe_delay      = 30;       // [ms] - The strobe pulse time
@@ -966,4 +966,3 @@ void displayTime(int hsv_hue, int hsv_sat, int hsv_val) {
     index[i] = 0;
   }
 }
-
