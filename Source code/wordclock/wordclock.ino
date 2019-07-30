@@ -11,8 +11,8 @@
 #include "FastLED.h"
 
 /* Does the LED strip start at the top left letter 'H' or the top right letter 'N'? */
-#define START_N         1         // [-]
-#define START_H         0         // [-]
+#define START_N         0         // [-]
+#define START_H         1         // [-]
                         
 FASTLED_USING_NAMESPACE 
                         
