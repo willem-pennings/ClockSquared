@@ -1,497 +1,636 @@
-/* ClockSquared by Willem Pennings - My design of the Word Clock.
- * Utilizes LED strips and now features individual control of letters.
- * Copyright (C) 2017 Willem Pennings (willemm.nl)
- * The FastLED and DS1307 RTC library are required to compile this sketch!
+/* ClockSquared by Willem Pennings
+ * A WS2812B-based word clock with birthday feature
+ * Copyright (C) 2017-2019 Willem Pennings (willemm.nl)
+ * The FastLED and RTClib library are required to compile this sketch!
  */
 
 /* Libraries */
 #include <Wire.h>
-#include <Time.h>
-#include <DS1307RTC.h>
+#include <EEPROM.h>
 #include "FastLED.h"
+#include "RTClib.h"
 
-/* Does the LED strip start at the top left letter 'H' or the top right letter 'N'? */
-#define START_N         0         // [-]
-#define START_H         1         // [-]
-                        
-FASTLED_USING_NAMESPACE 
+RTC_DS3231 rtc;
+RTC_Millis softrtc;
+FASTLED_USING_NAMESPACE
+
+const bool mirrorDisplay    = false;
+const bool boustrofedon     = true;
                         
 /* LED strip and grid definitions */
-#define NUM_LEDS        121       // [-] - The amount of lights on the strip
-#define DATA_PIN        2         // [-] - The Arduino data output pin
-#define CLOCK_PIN       3         // [-] - The Arduino clock output pin (if using a 4-pin LED)
-#define LIGHT_PIN       4         // [-] - LED button transistor light switch pin (optional)
-#define LED_TYPE        APA102    // [-] - The LED strip model
-#define COLOR_ORDER     BGR       // [-] - The LED strip color order
-CRGB leds[NUM_LEDS];  
-                        
-/* Input pin definitions */
-#define INC_PIN         9         // [-] - The Arduino increment input pin. Has multiple uses
-#define DEC_PIN         10        // [-] - The Arduino decrement input pin. Has multiple uses
-#define COL_PIN         11        // [-] - The Arduino color input pin. Has multiple uses
+#define LED_TYPE              WS2812B     // [-] - LED strip model
+#define COLOR_ORDER           GRB         // [-] - LED strip color order
+const uint8_t numLeds       = 121;        // [-] - Number of LEDS
+const uint8_t dataPin       = A0;         // [-] - LED data pin
 
-/* Time variables */
-time_t                  t;        // [s] - Absolute time in seconds
+CRGB leds[numLeds];
+CRGB leds_p[numLeds];
+
+/* Input pin definitions */
+const uint8_t buttonPins[3] = {A1,A2,A3};  // [-] - Button pins
+const uint8_t buttonLedPin  = 12;          // Button LED power pin
 
 /* HSV colour variables */
-int hsv_hue           = 0;        // [-] - Red as standard hue value.
-int hsv_sat           = 0;        // [-] - 0 saturation for white colour as default.
-int hsv_val           = 255;      // [-] - Full brightness is standard value.
+uint8_t hue                 = 0;           // [-] - Red as standard hue value.
+uint8_t sat                 = 0;           // [-] - 0 saturation for white colour as default.
+uint8_t val                 = 255;         // [-] - Full brightness is standard value.
 
 /* General variables */
-int fps               = 120;      // [frames/s] - The rendering speed (animations)
-int interval          = 1000;     // [ms] - The interval which is mainly used for input debouncing
-int brightness        = 128;      // [-] - LED strip global brightness on a scale of 0 to 255
-int brightvar         = 10;       // [-] - Brightness variable
-int frequency_strobe  = 1;        // [Hz] - The frequency of the strobe function
-int strobe_delay      = 30;       // [ms] - The strobe pulse time
-long buttonTime       = 0;        // [ms] - Time at which the button was pressed
-long updateTime       = 0;        // [ms] - Time at which the last time update was done
-bool index[20]        = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-int i,j               = 0;        // [-] - Help variables, for example in the for(){} functions
+uint16_t interval           = 1000;       // [ms] - General time interval variable
+uint8_t brightness          = 128;        // [-] - LED strip global brightness on a scale of 0 to 255
+unsigned long updateTime    = 0;          // [ms] - Time at which the last time update was done
+bool index[20]              = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+uint8_t i,j,k               = 0;          // [-] - General purpose indexing variables
+bool maintenanceMode        = false;      // [-] - Maintenance mode toggle
 
-uint8_t gCurrentModeNumber = 0;   // [-] - The current mode number
-uint8_t gHue = 0;                 // [-] - HSV hue value [0-255] used clock-wide for all animations
+/* Colour variables */
+const uint8_t colours[8][3] PROGMEM = {{  0,  0,255},  // white
+                                       {  0,255,255},  // red
+                                       { 30,255,255},  // orange
+                                       { 43,255,255},  // yellow
+                                       { 85,255,255},  // green
+                                       {170,255,255},  // blue
+                                       {213,255,255},  // magenta
+                                       {248,255,224}}; // pink
 
-void setup() {
-  /* Provide a small startup delay to let hardware initialize */
-  FastLED.clear();
+uint8_t colourIndex        = 0;
+bool birthdayMode          = false;
+bool manualBirthdayMode    = false;
+bool softRTC               = false;
+
+/* Birthday LED positions */
+const uint8_t birthdayPos[16] PROGMEM = {34,35,36,37,38,55,56,57,58,59,60,61,62,63,64,65};
+
+// Bitmap font locations
+const uint8_t posL[35] PROGMEM = {22,23,24,25,26,33,34,35,36,37,44,45,46,47,48,55,56,57,58,59,66,67,68,69,70,77,78,79,80,81,88,89,90,91,92};
+const uint8_t posR[35] PROGMEM = {28,29,30,31,32,39,40,41,42,43,50,51,52,53,54,61,62,63,64,65,72,73,74,75,76,83,84,85,86,87,94,95,96,97,98};
+                          
+/* 5x7 bitmap number font */
+const uint8_t font5x7[10][35] PROGMEM = {{0,1,1,1,0,1,0,0,0,1,1,0,0,1,1,1,0,1,0,1,1,1,0,0,1,1,0,0,0,1,0,1,1,1,0},  // 0
+                                         {0,1,1,0,0,1,0,1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1,0,0,1,1,1,1,1},  // 1
+                                         {0,1,1,1,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1,1,1,1,1},  // 2
+                                         {0,1,1,1,0,1,0,0,0,1,0,0,0,0,1,0,1,1,1,0,0,0,0,0,1,1,0,0,0,1,0,1,1,1,0},  // 3
+                                         {0,0,0,1,0,0,0,1,1,0,0,1,0,1,0,1,0,0,1,0,1,1,1,1,1,0,0,0,1,0,0,0,0,1,0},  // 4
+                                         {1,1,1,1,1,1,0,0,0,0,1,1,1,1,0,0,0,0,0,1,0,0,0,0,1,1,0,0,0,1,0,1,1,1,0},  // 5
+                                         {0,1,1,1,0,1,0,0,0,1,1,0,0,0,0,1,1,1,1,0,1,0,0,0,1,1,0,0,0,1,0,1,1,1,0},  // 6
+                                         {1,1,1,1,1,0,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1,0,0,0,0,1,0,0,0},  // 7
+                                         {0,1,1,1,0,1,0,0,0,1,1,0,0,0,1,0,1,1,1,0,1,0,0,0,1,1,0,0,0,1,0,1,1,1,0},  // 8
+                                         {0,1,1,1,0,1,0,0,0,1,1,0,0,0,1,0,1,1,1,1,0,0,0,0,1,1,0,0,0,1,0,1,1,1,0}}; // 9
+
+// Amount of birthdays that can be stored in EEPROM
+const uint8_t nBirthdays = 20;
+
+// Debounce condition for switching between maintenance mode and regular mode
+unsigned long switchTime = 0;
+
+// Timer for AM PM indicator display
+unsigned long APTime = 0;
+
+void setup() { 
+  // Clear display at startup and provide time for hardware initialization
   delay(1000);
+  FastLED.clear();
   
-  /* Initialize communication protocols */
-  Serial.begin(9600);
+  // Initialize communications
+  Serial.begin(115200);
   Wire.begin();
 
-  /* Initialize pins */
-  pinMode(INC_PIN, INPUT);
-  pinMode(DEC_PIN, INPUT);
-  pinMode(COL_PIN, INPUT);
+  // Initialize pins
+  for(i = 0; i < 3; i++) {
+    pinMode(buttonPins[i], INPUT);
+  }
   
-  pinMode(LIGHT_PIN, OUTPUT);
-  digitalWrite(LIGHT_PIN, HIGH);
+  pinMode(buttonLedPin, OUTPUT);
+  digitalWrite(buttonLedPin, HIGH);
 
-  /* Initialize LED strip */
-  FastLED.addLeds<LED_TYPE, DATA_PIN, CLOCK_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+  // Initialize LED strip
+  //FastLED.addLeds<LED_TYPE, dataPin, COLOR_ORDER>(leds_p, numLeds).setCorrection(TypicalLEDStrip);
+  FastLED.addLeds<APA102, 2, 3, BGR>(leds_p, numLeds).setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(brightness);
 
-  /* Initialize RTC & set system time */
-  setSyncProvider(RTC.get);
-  if(timeStatus() != timeSet) {
-    Serial.println("Unable to sync with DS3231. Top left LED will blink red for 10 seconds!");
-    while(millis() < 10000) {
-      leds[10] = CRGB::Red;
-      FastLED.show();
-    }
-  } else {
-    Serial.println("RTC has set the system time");
-  }
+  if(rtc.lostPower()) {
+    Serial.println(F("Could not find RTC or RTC lost power. Falling back to softrtc timekeeping..."));
+    softrtc.begin(DateTime(2019, 1, 1, 0, 0, 0));
+    rtc.adjust(DateTime(2019, 1, 1, 0, 0, 0));
+    Serial.println(F("Datetime has been set to January 1, 2019, 12AM (midnight)."));
+    softRTC = true;
 
-  /* Blink all LEDs in RGB order to make sure colour order is correct and all LEDs work */
-  for(i=0; i < NUM_LEDS; i++) {
-    leds[i] = CRGB::Red;
+    // Blink center LED three times in red to indicate RTC failure
+    for(i = 0; i < 3; i++) {
+      leds_p[60] = CRGB::Red;
+      FastLED.show();
+      delay(500);
+      leds_p[60] = CRGB::Black;
+      FastLED.show();
+      delay(500);
+    }
   }
-  FastLED.show();
-  delay(500);
-  for(i=0; i < NUM_LEDS; i++) {
-    leds[i] = CRGB::Green;
+  
+  // Startup animation in RGB sequence to verify correctness of software colour order
+  leds_p[60] = CRGB::Red;
+  for(i = 0; i < 25; i++) {
+    leds_p[60].fadeToBlackBy(26);
+    FastLED.show();
+    delay(20);
   }
-  FastLED.show();
-  delay(500);
-  for(i=0; i < NUM_LEDS; i++) {
-    leds[i] = CRGB::Blue;
+  leds_p[60] = CRGB::Green;
+  for(i = 0; i < 25; i++) {
+    leds_p[60].fadeToBlackBy(26);
+    FastLED.show();
+    delay(20);
   }
-  FastLED.show();
-  delay(500);
+  leds_p[60] = CRGB::Blue;
+  for(i = 0; i < 25; i++) {
+    leds_p[60].fadeToBlackBy(26);
+    FastLED.show();
+    delay(20);
+  }
+  leds_p[60] = CRGB::White;
+  for(j = 0; j < 50; j++) {
+    leds_p[60].fadeToBlackBy(26);
+    FastLED.show();
+    delay(10);
+  }
+  
   FastLED.clear();
 
-  /* Render the time, given that the startup mode is 1 (normal operation) */
-  if(gCurrentModeNumber == 0) {
-    displayTime(hsv_hue, hsv_sat, hsv_val);
+  // Read previous screen colour from EEPROM
+  if(EEPROM.read(2*nBirthdays) == 255) {
+    colourIndex = 0;
+  } else {
+    colourIndex = EEPROM.read(2*nBirthdays);
   }
-}
+  hue = pgm_read_byte(&(colours[colourIndex][0]));
+  sat = pgm_read_byte(&(colours[colourIndex][1]));
+  val = pgm_read_byte(&(colours[colourIndex][2]));
 
-typedef void (*modeList[])();
-modeList gModes = {normal, varbright, night, confetti, wave, birthday};
+  // Display system time on screen
+  displayTime(hue, sat, val);
+
+  // Check if the birthday message should be enabled
+  checkBirthdays();
+}
 
 void loop() {
-  gModes[gCurrentModeNumber]();
-  FastLED.show();
-  FastLED.delay(1000/fps);
+  if(!maintenanceMode) {
+    // Timekeeping (refresh every minute)
+    if(second() == 0 && (millis() - updateTime > interval)) {
+      displayTime(hue, sat, val);
+      updateTime = millis();
+    }
+  
+    // Wipe birthday message at midnight and check for new birthdays
+    if(hour() == 0 && minute() == 0 && second() == 0) {
+      // Disable manual birthday mode if it was enabled
+      if(manualBirthdayMode) {
+        manualBirthdayMode = false;
+      }
+      
+      if(birthdayMode) {
+        for(i = 0; i < 16; i++) {
+          leds[pgm_read_byte(&(birthdayPos[i]))] = CRGB::Black;
+        }
+      }
 
-  /* Increase HSV hue value every 20 milliseconds */
-  EVERY_N_MILLISECONDS(20) {
-    gHue++;
+      // Check if there's a new birthday today
+      checkBirthdays();
+    }
+
+    // Display birthday message if birthdayMode is enabled
+    birthdays();
+  
+    // Check buttons
+    buttons();
+  } else {
+    // Maintenance mode: set current date and birthdays
+    setDateBirthdays();
   }
 
-  /* Go to the next mode if both the increment and decrement pins are pressed */
-  if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 0) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(1000);
-    if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 0)) {
-      nextPattern();
+  // Check if AM/PM indicator should be shown (only when changing time)
+  AMPMIndicator();
+
+  // Refresh display
+  printScreen(mirrorDisplay, boustrofedon);
+}
+
+// AM-PM indicator while changing time
+void AMPMIndicator() {
+  if(millis() - APTime < 2000) {
+    if(hour() >= 12) {
+      leds[3] = CRGB::Blue;
+    } else {
+      leds[3] = CRGB::Red;
+    }
+  } else {
+    leds[3] = CRGB::Black;
+  }
+}
+
+// Colour changing code
+void changeColour() {
+  if(colourIndex == 7) {
+    colourIndex = 0;
+  } else {
+    colourIndex++;
+  }
+
+  hue = pgm_read_byte(&(colours[colourIndex][0]));
+  sat = pgm_read_byte(&(colours[colourIndex][1]));
+  val = pgm_read_byte(&(colours[colourIndex][2]));
+
+  displayTime(hue, sat, val);
+
+  // Write new colour value to EEPROM
+  EEPROM.update(2*nBirthdays, colourIndex);
+  
+  Serial.println(F("Button 1 - Text colour changed."));
+}
+
+// Change screen brightness
+void changeBrightness() {
+  static bool incrementing = false;
+  
+  if(brightness == 128) {
+    incrementing = false;
+  } else
+  if(brightness == 0) {
+    incrementing = true;
+  }
+  
+  if(incrementing) {
+    brightness++;
+
+    if(brightness == 32) {
+      digitalWrite(buttonLedPin, HIGH);
+      Serial.println(F("Button LEDs enabled."));
+    }
+  } else {
+    brightness--;
+
+    if(brightness == 32) {
+      digitalWrite(buttonLedPin, LOW);
+      Serial.println(F("Button LEDs disabled."));
+    }
+  }
+
+  FastLED.setBrightness(brightness);
+  
+  Serial.print(F("Button 1 + 2 - brightness changed (")); Serial.print(brightness); Serial.println(F(")."));
+}
+
+// Increment time to the next 5-minute indicator
+void incrementTime() {
+  if(!softRTC) {
+    DateTime now = rtc.now();
+    int adjustment = -((5 + (minute() % 5)) * 60 + second()) + 600;
+    rtc.adjust(now + adjustment);
+  } else {
+    DateTime now = softrtc.now();
+    int adjustment = -((5 + (minute() % 5)) * 60 + second()) + 600;
+    softrtc.adjust(now + adjustment);
+    rtc.adjust(now + adjustment);
+  }
+
+  displayTime(hue, sat, val);
+  checkBirthdays();
+  APTime = millis();
+  Serial.println(F("Button 2 - time incremented."));
+}
+
+// Decrement time to the previous 5-minute indicator
+void decrementTime() {
+  if(!softRTC) {
+    DateTime now = rtc.now();
+    int adjustment = -((5 + (minute() % 5)) * 60 + second());
+    rtc.adjust(now + adjustment);
+  } else {
+    DateTime now = softrtc.now();
+    int adjustment = -((5 + (minute() % 5)) * 60 + second());
+    softrtc.adjust(now + adjustment);
+    rtc.adjust(now + adjustment);
+  }
+
+  displayTime(hue, sat, val);
+  checkBirthdays();
+  APTime = millis();
+  Serial.println(F("Button 3 - time decremented."));
+}
+
+void buttons() {
+  int readings[3];
+  static bool lastReadings[3];
+  static unsigned long buttonTime, cTime, iTime, dTime, bTime, vTime, sTime;
+
+  static int debounceTime = 200;
+
+  // Get and process readings
+  if(analogRead(buttonPins[0]) < 100) {readings[0] = true;} else {readings[0] = false;}
+  if(analogRead(buttonPins[1]) < 100) {readings[1] = true;} else {readings[1] = false;}
+  if(analogRead(buttonPins[2]) < 100) {readings[2] = true;} else {readings[2] = false;}
+
+  // Check if button state has changed w.r.t. last loop
+  for(i = 0; i < 3; i++) {
+    if(readings[i] != lastReadings[i]) {
+      // Register time at which buttons were pressed
+      buttonTime = millis();
+    }
+  }
+
+  // Debounce conditions
+  if(millis() - buttonTime > debounceTime) {
+    // Button 1 press
+    if(readings[0] == 1 && readings[1] == 0 && readings[2] == 0 && (millis() - cTime > 500)) {
+      changeColour();
+      cTime = millis();
+    } else
+    // Button 2 press
+    if(readings[0] == 0 && readings[1] == 1 && readings[2] == 0 && (millis() - iTime > 500)) {
+      incrementTime();
+      iTime = millis();
+    } else
+    // Button 3 press
+    if(readings[0] == 0 && readings[1] == 0 && readings[2] == 1 && (millis() - dTime > 500)) {
+      decrementTime();
+      dTime = millis();
+    } else
+    // Button 1 + 2 press
+    if(readings[0] == 1 && readings[1] == 1 && readings[2] == 0 && (millis() - bTime > 50)) {
+      changeBrightness();
+      bTime = millis();
+    }
+    // Button 2 + 3 press
+    if(readings[0] == 0 && readings[1] == 1 && readings[2] == 1 && (millis() - vTime > 1000)) {
+      changeBirthday();
+      vTime = millis();
+    }
+    // Button 1 + 2 + 3 press
+    if(readings[0] == 1 && readings[1] == 1 && readings[2] == 1 && (millis() - sTime > 1000) && (millis() - switchTime > 1000)) {
+      maintenanceMode = true;
+      FastLED.clear();
+
+      // Clear screen
+      for(i = 0; i < numLeds; i++) {
+        leds[i] = CRGB:: Black;
+      }
+
+      // Set screen colour to white
+      hue = 0; sat = 0; val = 255;
+
+      // Clear EEPROM that contains birthdays (max. 20)
+      for(i = 0; i < (2*nBirthdays); i++) {
+        EEPROM.update(i,0);
+      }
+      
+      Serial.println(F("Initialized maintenance mode!"));
+      sTime = millis();
+      switchTime = millis();
+    }
+  }
+  
+  // Save current readings to new variable for comparison in next loop
+  for(i = 0; i < 3; i++) {
+    lastReadings[i] = readings[i];
+  }
+}
+
+// Manual birthday mode controller
+void changeBirthday() {
+  if(!manualBirthdayMode) {
+    manualBirthdayMode = !manualBirthdayMode;
+    Serial.println(F("Button 2 + 3 - Birthday mode turned on."));
+  } else {
+    manualBirthdayMode = !manualBirthdayMode;
+    for(i = 0; i < 16; i++) {
+      leds[pgm_read_byte(&(birthdayPos[i]))] = CRGB::Black;
+    }
+    displayTime(hue, sat, val);
+    Serial.println(F("Button 2 + 3 - Birthday mode turned off."));
+  }
+}
+
+// Check if birthday message should be activated based on automatic datekeeping
+void checkBirthdays() {
+  // Reset birthday boolean
+  birthdayMode = false;
+
+  for(i = 0; i < nBirthdays; i++) {
+    if(day() == EEPROM.read(i*2) && month() == EEPROM.read(i*2+1)) {
+      // If there's any birthday today, enable birthday mode
+      birthdayMode = true;
     }
   }
 }
 
-/* Apparently this makes sense */
-#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+// Birthday message code
+void birthdays() {
+  if((birthdayMode || manualBirthdayMode) && brightness >= 32) {
+    static long int waitTime = 0;
 
-/* Handles the changing of modes and start conditions when a mode is initialized */
-void nextPattern() {
-  FastLED.clear(true);
-  gCurrentModeNumber = (gCurrentModeNumber + 1) % ARRAY_SIZE(gModes);
-  
-  if(gCurrentModeNumber == 0 || gCurrentModeNumber == 5) { // Normal or birthday
-    FastLED.setBrightness(128);
-    digitalWrite(LIGHT_PIN, HIGH);
-    fps = 120;
-    hsv_sat = 0;
-    hsv_hue = 0;
-    displayTime(hsv_hue, hsv_sat, hsv_val);
-  }
-  if(gCurrentModeNumber == 1) { // varbright
-    FastLED.setBrightness(10);
-    digitalWrite(LIGHT_PIN, LOW);
-    fps = 120;
-    hsv_sat = 0;
-    hsv_hue = 0;
-    brightvar = 10;
-    displayTime(hsv_hue, hsv_sat, hsv_val);
-  }
-  if(gCurrentModeNumber == 2) { // Night
-    FastLED.setBrightness(2);
-    digitalWrite(LIGHT_PIN, LOW);
-    fps = 120;
-    hsv_sat = 255;
-    hsv_hue = 0;
-    displayTime(hsv_hue, hsv_sat, hsv_val);
-  }
-  if(gCurrentModeNumber == 3) { // Confetti
-    FastLED.setBrightness(128);
-    digitalWrite(LIGHT_PIN, HIGH);
-    fps = 120;
-  }
-  if(gCurrentModeNumber == 4) { // Wave
-    digitalWrite(LIGHT_PIN, HIGH);
-    FastLED.setBrightness(128);
-    fps = 120;
-  }
-}
-
-void normal() {
-  if(millis() - updateTime > 5*interval) {
-    displayTime(hsv_hue, hsv_sat, hsv_val);
-    updateTime = millis();
-  }
-  
-  /* This code displays a rainbow effect on the birthday words 'Fijne verjaardag' */
-
-  // Some random birthday examples; set any date or amount
-  if(((month() == 8) && (day() == 5)) || ((month() == 9) && (day() == 18))) {
-    if(START_N) {
-      for(i = 38; i >= 34; i--) {
-        leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
+    if(millis() - waitTime > 8) {
+      for(i = 0; i < 16; i++) {
+        leds[pgm_read_byte(&(birthdayPos[i]))] = CHSV(17*i - k, 255, 255);
       }
-      for(i = 65; i >= 55; i--) {
-        leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
+      k++;
+      if(k == 255) {
+        k = 0;
       }
-      j+=2;
-      if(j >= 255*5) {
-        j = 0;
-      }
+      waitTime = millis();
     }
-    if(START_H) {
-      for(i = 42; i >= 38; i--) {
-        leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
-      }
-      for(i = 65; i >= 55; i--) {
-        leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
-      }
-      j+=2;
-      if(j >= 255*5) {
-        j = 0;
-      }
-    }
-  }
-
-  /* Wipe the LED matrix once a day to clear birthday messages after the birthday is over */
-  if(hour() == 0 && minute() == 1 && second() == 1) {
-    FastLED.clear();
-  }
-  
-  /* If the colour button is pressed, set HSV values to change colours and increment hue value */
-  if((digitalRead(COL_PIN) == 0) && (millis() - buttonTime > interval*0.05)) {
-    buttonTime = millis();
-    delay(50);
-    if(digitalRead(COL_PIN) == 0) {
-      hsv_sat = 255;
-      hsv_hue = hsv_hue + 2;
-      displayTime(hsv_hue, hsv_sat, hsv_val);
-    }
-  }
-
-  /* Check if the time should be incremented */
-  if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(250);
-    if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1)) {   
-      adjustTime(-((5 + (minute() % 5)) * 60 + second()) + 600);
-      t = now();
-      RTC.set(t);
-      displayTime(hsv_hue, hsv_sat, hsv_val);
-    }
-  }
-
-  /* Check if the time should be decremented */
-  if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(250);
-    if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0)) {
-      adjustTime(-((5 + (minute() % 5)) * 60 + second()));
-      t = now();
-      RTC.set(t);
-      displayTime(hsv_hue, hsv_sat, hsv_val);
+  } else {
+    for(i = 0; i < 16; i++) {
+      leds[pgm_read_byte(&(birthdayPos[i]))] = CRGB::Black;
     }
   }
 }
 
-void varbright() {
-  if(millis() - updateTime > 5*interval) {
-    displayTime(hsv_hue, hsv_sat, hsv_val);
-    updateTime = millis();
-  }
-  
-  /* This code displays a rainbow effect on the birthday words 'Fijne verjaardag' */
+void displayDigits(uint8_t num) {
+  // Print two 5x7 bitmap numbers on the clock screen
 
-  // Some random birthday examples; set any date or amount
-  if(((month() == 8) && (day() == 5)) || ((month() == 9) && (day() == 18))) {
-    if(START_N) {
-      for(i = 38; i >= 34; i--) {
-        leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
-      }
-      for(i = 65; i >= 55; i--) {
-        leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
-      }
-      j+=2;
-      if(j >= 255*5) {
-        j = 0;
-      }
-    }
-    if(START_H) {
-      for(i = 42; i >= 38; i--) {
-        leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
-      }
-      for(i = 65; i >= 55; i--) {
-        leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
-      }
-      j+=2;
-      if(j >= 255*5) {
-        j = 0;
-      }
+  uint8_t numL = (num - (num % 10)) / 10;
+  uint8_t numR = num % 10;
+
+  for(i = 0; i < 35; i++) {
+    if(pgm_read_byte(&(font5x7[numL][i])) == 1) {
+      leds[pgm_read_byte(&(posL[i]))] = CHSV(hue, sat, val);
     }
   }
 
-  /* Wipe the LED matrix once a day to clear birthday messages after the birthday is over */
-  if(hour() == 0 && minute() == 1 && second() == 1) {
-    FastLED.clear();
+  for(i = 0; i < 35; i++) {
+    if(pgm_read_byte(&(font5x7[numR][i])) == 1) {
+      leds[pgm_read_byte(&(posR[i]))] = CHSV(hue, sat, val);
+    }
   }
+}
+
+void setDateBirthdays() {
+  static long int db, db1, db2, db3, db4;
+
+  int readings[3];
+  static bool lastReadings[3];
   
-  /* If the colour button is pressed, set brightness values to change LED brightness */
-  if((digitalRead(COL_PIN) == 0) && (millis() - buttonTime > interval*0.05)) {
-    buttonTime = millis();
-    delay(50);
-    if(digitalRead(COL_PIN) == 0) {
-      if(brightvar == 128) {
-        brightvar = 1;
+  static int debounceTime = 200;
+  
+  static uint8_t dayVal = 1;
+  static uint8_t monVal = 1;
+
+  static bool settingDay = true;
+  static bool settingBirthday = false;
+
+  static uint8_t nBirthday = 0;
+
+  // Get and process readings
+  if(analogRead(buttonPins[0]) < 100) {readings[0] = true;} else {readings[0] = false;}
+  if(analogRead(buttonPins[1]) < 100) {readings[1] = true;} else {readings[1] = false;}
+  if(analogRead(buttonPins[2]) < 100) {readings[2] = true;} else {readings[2] = false;}
+
+  // Check if button state has changed w.r.t. last loop
+  for(i = 0; i < 3; i++) {
+    if(readings[i] != lastReadings[i]) {
+      // Register time at which buttons were pressed
+      db = millis();
+    }
+  }
+
+  // Button logic
+  if(millis() - db > debounceTime) {
+    // Button 1 press
+    if(readings[0] == 1 && readings[1] == 0 && readings[2] == 0 && (millis() - db1 > 500)) {
+      if(!settingDay) {
+        if(!settingBirthday) {
+          // Write date value to clock
+          rtc.adjust(DateTime(year(), monVal, dayVal, hour(), minute(), second()));
+          
+          // Reset date indicators
+          dayVal = 1;
+          monVal = 1;
+
+          // Now start saving birthdays to EEPROM
+          settingBirthday = true;
+
+          // Confirm new date by printing it to console
+          DateTime now = rtc.now();
+          Serial.print("New date written to RTC: "); Serial.print(year()); Serial.print("-"); Serial.print(month()); Serial.print("-"); Serial.print(day()); Serial.print(" "); Serial.print(hour()); Serial.print(":"); Serial.print(minute()); Serial.print(":"); Serial.print(second()); Serial.println(".");
+        } else {
+          // Write birthday pair (day + month) to EEPROM
+          EEPROM.update(nBirthday*2, dayVal);
+          EEPROM.update(nBirthday*2+1, monVal);
+
+          // Confirm birthday by printing it to console
+          Serial.print("New birthday saved (number "); Serial.print(nBirthday); Serial.print("). Date: "); Serial.print(dayVal); Serial.print("-"); Serial.print(monVal); Serial.println(".");
+
+          // Reset date indicators
+          dayVal = 1;
+          monVal = 1;
+
+          // Increase the birthday counter if there is sufficient room
+          if(nBirthday < 20) {
+            nBirthday++;
+          } else {
+            // Otherwise, quit maintenance mode and resume normal operation
+            for(i = 0; i < numLeds; i++) {
+              leds[i] = CRGB::Black;
+            }
+
+            // Retrieve old hue, sat and val from EEPROM
+            hue = pgm_read_byte(&(colours[colourIndex][0]));
+            sat = pgm_read_byte(&(colours[colourIndex][1]));
+            val = pgm_read_byte(&(colours[colourIndex][2]));
+            
+            displayTime(hue, sat, val);
+
+            // Reset day and month indicators
+            dayVal = 1;
+            monVal = 1;
+            
+            maintenanceMode = false;
+            checkBirthdays();
+          }
+        }
+      }
+      
+      // Flip the current setting
+      settingDay = !settingDay;
+      
+      db1 = millis();
+    } else
+    // Button 2 press
+    if(readings[0] == 0 && readings[1] == 1 && readings[2] == 0 && (millis() - db2 > 500)) {
+      if(settingDay) {
+        if(dayVal < 31) {
+          dayVal++;
+        } else {
+          dayVal = 1;
+        }
       } else {
-        brightvar++;
+        if(monVal < 12) {
+          monVal++;
+        } else {
+          monVal = 1;
+        }
       }
-      FastLED.setBrightness(brightvar);
-      displayTime(hsv_hue, hsv_sat, hsv_val);
-    }
-  }
-
-  /* Check if the time should be incremented */
-  if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(250);
-    if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1)) {   
-      adjustTime(-((5 + (minute() % 5)) * 60 + second()) + 600);
-      t = now();
-      RTC.set(t);
-      displayTime(hsv_hue, hsv_sat, hsv_val);
-    }
-  }
-
-  /* Check if the time should be decremented */
-  if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(250);
-    if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0)) {
-      adjustTime(-((5 + (minute() % 5)) * 60 + second()));
-      t = now();
-      RTC.set(t);
-      displayTime(hsv_hue, hsv_sat, hsv_val);
-    }
-  }
-}
-
-void night() {
-  if(millis() - updateTime > 5*interval) {
-    displayTime(hsv_hue, hsv_sat, hsv_val);
-    updateTime = millis();
-  }
-
-  /* This code displays a rainbow effect on the birthday words 'Fijne verjaardag' */
-  if(((month() == 8) && (day() == 5)) || ((month() == 9) && (day() == 18))) {
-    if(START_N) {
-      for(i = 38; i >= 34; i--) {
-        leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
-      }
-      for(i = 65; i >= 55; i--) {
-        leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
-      }
-      j+=2;
-      if(j >= 255*5) {
-        j = 0;
-      }
-    }
-    if(START_H) {
-      for(i = 42; i >= 38; i--) {
-        leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
-      }
-      for(i = 65; i >= 55; i--) {
-        leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
-      }
-      j+=2;
-      if(j >= 255*5) {
-        j = 0;
-      }
-    }
-  }
-
-  /* Wipe the LED matrix once a day to clear birthday messages after the birthday is over */
-  if(hour() == 0 && minute() == 1 && second() == 1) {
-    FastLED.clear();
-  }
-
-  /* Check if the time should be incremented */
-  if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(250);
-    if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1)) {
-      adjustTime(-((5 + (minute() % 5)) * 60 + second()) + 600);
-      t = now();
-      RTC.set(t);
-      displayTime(hsv_hue, hsv_sat, hsv_val);
-    }
-  }
-
-  /* Check if the time should be decremented */
-  if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(250);
-    if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0)) {
-      adjustTime(-((5 + (minute() % 5)) * 60 + second()));
-      t = now();
-      RTC.set(t);
-      displayTime(hsv_hue, hsv_sat, hsv_val);
-    }
-  }
-}
-
-/* Randomly coloured speckles that blink in and fade smoothly */
-void confetti() {
-  fadeToBlackBy(leds, NUM_LEDS, 10);
-  int pos = random16(NUM_LEDS);
-  leds[pos] += CHSV( gHue + random8(64), 200, 255);
-
-  if((digitalRead(COL_PIN) == 0) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(250);
-    if(digitalRead(COL_PIN) == 0) {
-      if(brightness == 255) {
-        brightness = 128;
+      db2 = millis();
+    } else
+    // Button 3 press
+    if(readings[0] == 0 && readings[1] == 0 && readings[2] == 1 && (millis() - db3 > 500)) {
+      if(settingDay) {
+        if(dayVal > 1) {
+          dayVal--;
+        } else {
+          dayVal = 31;
+        }
       } else {
-        brightness = brightness + 127;
+        if(monVal > 1) {
+          monVal--;
+        } else {
+          monVal = 12;
+        }
       }
-      FastLED.setBrightness(brightness);
+      db3 = millis();
     }
-  }
-}
+    // Button 1 + 2 + 3 press
+    if(readings[0] == 1 && readings[1] == 1 && readings[2] == 1 && (millis() - db4 > 500) && (millis() - switchTime > 1000)) {
+      // Quit maintenance mode and resume normal operation
+      for(i = 0; i < numLeds; i++) {
+        leds[i] = CRGB::Black;
+      }
 
-/* Cycles through the colour spectrum using a periodic formula */
-void wave() {
-  for(i = 0; i < 121; i++) {
-    leds[i] = CHSV(cubicwave8(gHue), 255, 255);
-  }
-}
+      // Retrieve old hue, sat and val from EEPROM
+      hue = pgm_read_byte(&(colours[colourIndex][0]));
+      sat = pgm_read_byte(&(colours[colourIndex][1]));
+      val = pgm_read_byte(&(colours[colourIndex][2]));
+      
+      displayTime(hue, sat, val);
 
-void birthday() {
-  if(millis() - updateTime > 5*interval) {
-    displayTime(hsv_hue, hsv_sat, hsv_val);
-    updateTime = millis();
-  }
-  
-  /* This code displays a rainbow effect on the birthday words 'Fijne verjaardag' */
-  if(START_N) {
-    for(i = 38; i >= 34; i--) {
-      leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
-    }
-    for(i = 65; i >= 55; i--) {
-      leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
-    }
-    j+=2;
-    if(j >= 255*5) {
-      j = 0;
-    }
-  }
-  if(START_H) {
-    for(i = 42; i >= 38; i--) {
-      leds[i] = CHSV((((i * 256 / 5) - j) & 255), 255, 255);
-    }
-    for(i = 65; i >= 55; i--) {
-      leds[i] = CHSV((((i * 256 / 10) - j) & 255), 255, 255);
-    }
-    j+=2;
-    if(j >= 255*5) {
-      j = 0;
+      // Reset day and month indicators
+      dayVal = 1;
+      monVal = 1;
+
+      Serial.println("Maintenance mode disabled!");
+      
+      maintenanceMode = false;
+      checkBirthdays();
+      
+      db4 = millis();
+      switchTime = millis();
     }
   }
 
-  /* If the colour button is pressed, set HSV values to change colours and increment hue value */
-  if((digitalRead(COL_PIN) == 0) && (millis() - buttonTime > interval*0.05)) {
-    buttonTime = millis();
-    delay(50);
-    if(digitalRead(COL_PIN) == 0) {
-      hsv_sat = 255;
-      hsv_hue = hsv_hue + 2;
-      displayTime(hsv_hue, hsv_sat, hsv_val);
+  // Clear original led index
+  if(maintenanceMode) {
+    for(i = 0; i < numLeds; i++) {
+      leds[i] = CRGB::Black;
+    }
+
+    if(settingDay) {
+      displayDigits(dayVal);
+    } else {
+      displayDigits(monVal);
     }
   }
 
-  /* Check if the time should be incremented */
-  if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(250);
-    if((digitalRead(INC_PIN) == 0) && (digitalRead(DEC_PIN) == 1)) {   
-      adjustTime(-((5 + (minute() % 5)) * 60 + second()) + 600);
-      t = now();
-      RTC.set(t);
-      displayTime(hsv_hue, hsv_sat, hsv_val);
-    }
-  }
-
-  /* Check if the time should be decremented */
-  if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    delay(250);
-    if((digitalRead(INC_PIN) == 1) && (digitalRead(DEC_PIN) == 0)) {
-      adjustTime(-((5 + (minute() % 5)) * 60 + second()));
-      t = now();
-      RTC.set(t);
-      displayTime(hsv_hue, hsv_sat, hsv_val);
-    }
+  // Save current readings to new variable for comparison in next loop
+  for(i = 0; i < 3; i++) {
+    lastReadings[i] = readings[i];
   }
 }
 
@@ -499,32 +638,18 @@ void birthday() {
  * it to hours and minutes, and then translates that to a series of
  * LEDs to light up.
  */
-void displayTime(int hsv_hue, int hsv_sat, int hsv_val) {
-  if(START_N) {
-    for(i = 0; i <= 33; i++) {
-      leds[i] = CRGB::Black;
-    }
-    for(i = 39; i <= 54; i++) {
-      leds[i] = CRGB::Black;
-    }
-    for(i = 66; i <= 120; i++) {
-      leds[i] = CRGB::Black;
-    }
+void displayTime(int hue, int sat, int val) {
+  for(i = 0; i <= 33; i++) {
+    leds[i] = CRGB::Black;
   }
-  if(START_H) {
-    for(i = 0; i <= 37; i++) {
-      leds[i] = CRGB::Black;
-    }
-    for(i = 43; i <= 54; i++) {
-      leds[i] = CRGB::Black;
-    }
-    for(i = 66; i <= 120; i++) {
-      leds[i] = CRGB::Black;
-    }
+  for(i = 39; i <= 54; i++) {
+    leds[i] = CRGB::Black;
   }
-  index[19] = 1; // het is
+  for(i = 66; i < numLeds; i++) {
+    leds[i] = CRGB::Black;
+  }
   
-  /* Minutes */
+  // Minute indicator control
   if((minute() >= 5) && (minute() <= 9)) {
     index[0] = 1; // vijf
     index[5] = 1; // over
@@ -573,396 +698,231 @@ void displayTime(int hsv_hue, int hsv_sat, int hsv_val) {
     index[4] = 1; // voor
   }
 
-  /* "It's <hour> o'clock" */
-  if((minute() < 5) && (hourFormat12() == 1)) {
-    index[6]  = 1; // een
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 2)) {
-    index[7]  = 1; // twee
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 3)) {
-    index[8]  = 1; // drie
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 4)) {
-    index[9]  = 1; // vier
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 5)) {
-    index[10] = 1; // vijf
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 6)) {
-    index[11] = 1; // zes
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 7)) {
-    index[12] = 1; // zeven
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 8)) {
-    index[13] = 1; // acht
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 9)) {
-    index[14] = 1; // negen
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 10)) {
-    index[15] = 1; // tien
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 11)) {
-    index[16] = 1; // elf
-    index[18] = 1; // uur
-  }
-  if((minute() < 5) && (hourFormat12() == 12)) {
-    index[17] = 1; // twaalf
-    index[18] = 1; // uur
+  // Hour indicator control
+  if(minute() < 20) {
+    switch(hourFormat12()) {
+      case  1: index[6]  = 1; break; // 'een'
+      case  2: index[7]  = 1; break; // 'twee'
+      case  3: index[8]  = 1; break; // 'drie'
+      case  4: index[9]  = 1; break; // 'vier'
+      case  5: index[10] = 1; break; // 'vijf'
+      case  6: index[11] = 1; break; // 'zes'
+      case  7: index[12] = 1; break; // 'zeven'
+      case  8: index[13] = 1; break; // 'acht'
+      case  9: index[14] = 1; break; // 'negen'
+      case 10: index[15] = 1; break; // 'tien'
+      case 11: index[16] = 1; break; // 'elf'
+      case 12: index[17] = 1; break; // 'twaalf'
+    }
+
+    if(minute() < 5) {
+      index[18] = 1; // 'uur'
+    }
+  } else {
+    switch(hourFormat12()) {
+      case  1: index[7]  = 1; break; // 'twee'
+      case  2: index[8]  = 1; break; // 'drie'
+      case  3: index[9]  = 1; break; // 'vier'
+      case  4: index[10] = 1; break; // 'vijf'
+      case  5: index[11] = 1; break; // 'zes'
+      case  6: index[12] = 1; break; // 'zeven'
+      case  7: index[13] = 1; break; // 'acht'
+      case  8: index[14] = 1; break; // 'negen'
+      case  9: index[15] = 1; break; // 'tien'
+      case 10: index[16] = 1; break; // 'elf'
+      case 11: index[17] = 1; break; // 'twaalf'
+      case 12: index[6]  = 1; break; // 'een'
+    }
   }
 
-  /* Choose the hour when minute() < 20 */
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 1)) {
-    index[6]  = 1; // een
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 2)) {
-    index[7]  = 1; // twee
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 3)) {
-    index[8]  = 1; // drie
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 4)) {
-    index[9]  = 1; // vier
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 5)) {
-    index[10] = 1; // vijf
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 6)) {
-    index[11] = 1; // zes
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 7)) {
-    index[12] = 1; // zeven
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 8)) {
-    index[13] = 1; // acht
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 9)) {
-    index[14] = 1; // negen
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 10)) {
-    index[15] = 1; // tien
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 11)) {
-    index[16] = 1; // elf
-  }
-  if((minute() >= 5) && (minute() <= 19) && (hourFormat12() == 12)) {
-    index[17] = 1; // twaalf
-  }
+  // Check all indexes and activate the corresponding LEDs
+  for(i = 0; i <= 2; i++) {leds[i] = CHSV(hue, sat, val);} // het
+  for(i = 4; i <= 5; i++) {leds[i] = CHSV(hue, sat, val);} // is
+  if(index[ 0] == 1) {for(i =  18; i <=  21; i++) {leds[i] = CHSV(hue, sat, val);}} // vijf
+  if(index[ 1] == 1) {for(i =   7; i <=  10; i++) {leds[i] = CHSV(hue, sat, val);}} // tien
+  if(index[ 2] == 1) {for(i =  12; i <=  16; i++) {leds[i] = CHSV(hue, sat, val);}} // kwart
+  if(index[ 3] == 1) {for(i =  40; i <=  43; i++) {leds[i] = CHSV(hue, sat, val);}} // kwart
+  if(index[ 4] == 1) {for(i =  22; i <=  25; i++) {leds[i] = CHSV(hue, sat, val);}} // voor
+  if(index[ 5] == 1) {for(i =  28; i <=  31; i++) {leds[i] = CHSV(hue, sat, val);}} // over
+  if(index[ 6] == 1) {for(i =  66; i <=  68; i++) {leds[i] = CHSV(hue, sat, val);}} // een
+  if(index[ 7] == 1) {for(i =  45; i <=  48; i++) {leds[i] = CHSV(hue, sat, val);}} // twee
+  if(index[ 8] == 1) {for(i =  88; i <=  91; i++) {leds[i] = CHSV(hue, sat, val);}} // drie
+  if(index[ 9] == 1) {for(i = 106; i <= 109; i++) {leds[i] = CHSV(hue, sat, val);}} // vier
+  if(index[10] == 1) {for(i =  92; i <=  95; i++) {leds[i] = CHSV(hue, sat, val);}} // vijf
+  if(index[11] == 1) {for(i = 110; i <= 112; i++) {leds[i] = CHSV(hue, sat, val);}} // zes
+  if(index[12] == 1) {for(i =  78; i <=  82; i++) {leds[i] = CHSV(hue, sat, val);}} // zeven
+  if(index[13] == 1) {for(i = 113; i <= 116; i++) {leds[i] = CHSV(hue, sat, val);}} // acht
+  if(index[14] == 1) {for(i =  50; i <=  54; i++) {leds[i] = CHSV(hue, sat, val);}} // negen
+  if(index[15] == 1) {for(i =  70; i <=  73; i++) {leds[i] = CHSV(hue, sat, val);}} // tien
+  if(index[16] == 1) {for(i =  96; i <=  98; i++) {leds[i] = CHSV(hue, sat, val);}} // elf
+  if(index[17] == 1) {for(i =  99; i <= 104; i++) {leds[i] = CHSV(hue, sat, val);}} // twaalf
+  if(index[18] == 1) {for(i = 118; i <= 120; i++) {leds[i] = CHSV(hue, sat, val);}} // uur
 
-  /* Choose the hour when minute() >= 20 */
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 1)) {
-    index[7] = 1; // twee
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 2)) {
-    index[8]  = 1; // drie
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 3)) {
-    index[9]  = 1; // vier
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 4)) {
-    index[10] = 1; // vijf
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 5)) {
-    index[11] = 1; // zes
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 6)) {
-    index[12] = 1; // zeven
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 7)) {
-    index[13] = 1; // acht
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 8)) {
-    index[14] = 1; // negen
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 9)) {
-    index[15] = 1; // tien
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 10)) {
-    index[16] = 1; // elf
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 11)) {
-    index[17] = 1; // twaalf
-  }
-  if((minute() >= 20) && (minute() <= 59) && (hourFormat12() == 12)) {
-    index[6]  = 1; // een
-  }
-
-  /* Check the index number and activative the corresponding LEDs.
-   * The function also checks whether the hardware starts at top-left 'H' or top-right 'N'.
-   * The index array is reset after the time has been displayed, allowing a new iteration.
-   */
-  if(index[0] == 1) {
-    if(START_N) {
-      for(i = 18; i <= 21; i++) {
-          leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // vijf
-      }
-    }
-    if(START_H) {
-      for(i = 11; i <= 14; i++) {
-          leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // vijf
-      }
-    }
-  }
-  if(index[1] == 1) {
-    if(START_N) {
-      for(i = 0; i <= 3; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // tien
-      }
-    }
-    if(START_H) {
-      for(i = 7; i <= 10; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // tien
-      }
-    }
-  }
-  if(index[2] == 1) {
-    if(START_N) {
-      for(i = 12; i <= 16; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // kwart
-      }
-    }
-    if(START_H) {
-      for(i = 16; i <= 20; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // kwart
-      }
-    }
-  }
-  if(index[3] == 1) {
-    if(START_N) {
-      for(i = 40; i <= 43; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // half
-      }
-    }
-    if(START_H) {
-      for(i = 33; i <= 36; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // half
-      }
-    }
-  }
-  if(index[4] == 1) {
-    if(START_N) {
-      for(i = 29; i <= 32; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // voor
-      }
-    }
-    if(START_H) {
-      for(i = 22; i <= 25; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // voor
-      }
-    }
-  }
-  if(index[5] == 1) {
-    if(START_N) {
-      for(i = 23; i <= 26; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // over
-      }
-    }
-    if(START_H) {
-      for(i = 28; i <= 31; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // over
-      }
-    }
-  }
-  if(index[6] == 1) {
-    if(START_N) {
-      for(i = 74; i <= 76; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // een
-      }
-    }
-    if(START_H) {
-      for(i = 66; i <= 68; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // een
-      }
-    }
-  }
-  if(index[7] == 1) {
-    if(START_N) {
-      for(i = 50; i <= 53; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // twee
-      }
-    }
-    if(START_H) {
-      for(i = 45; i <= 48; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // twee
-      }
-    }
-  }
-  if(index[8] == 1) {
-    if(START_N) {
-      for(i = 95; i <= 98; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // drie
-      }
-    }
-    if(START_H) {
-      for(i = 88; i <= 91; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // drie
-      }
-    }
-  }
-  if(index[9] == 1) {
-    if(START_N) {
-      for(i = 106; i <= 109; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // vier
-      }
-    }
-    if(START_H) {
-      for(i = 99; i <= 102; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // vier
-      }
-    }
-  }
-  if(index[10] == 1) {
-    if(START_N) {
-      for(i = 91; i <= 94; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // vijf
-      }
-    }
-    if(START_H) {
-      for(i = 92; i <= 95; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // vijf
-      }
-    }
-  }
-  if(index[11] == 1) {
-    if(START_N) {
-      for(i = 118; i <= 120; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // zes
-      }
-    }
-    if(START_H) {
-      for(i = 110; i <= 112; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // zes
-      }
-    }
-  }
-  if(index[12] == 1) {
-    if(START_N) {
-      for(i = 78; i <= 82; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // zeven
-      }
-    }
-    if(START_H) {
-      for(i = 82; i <= 86; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // zeven
-      }
-    }
-  }
-  if(index[13] == 1) {
-    if(START_N) {
-      for(i = 114; i <= 117; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // acht
-      }
-    }
-    if(START_H) {
-      for(i = 113; i <= 116; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // acht
-      }
-    }
-  }
-  if(index[14] == 1) {
-    if(START_N) {
-      for(i = 44; i <= 48; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // negen
-      }
-    }
-    if(START_H) {
-      for(i = 50; i <= 54; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // negen
-      }
-    }
-  }
-  if(index[15] == 1) {
-    if(START_N) {
-      for(i = 69; i <= 72; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // tien
-      }
-    }
-    if(START_H) {
-      for(i = 70; i <= 73; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // tien
-      }
-    }
-  }
-  if(index[16] == 1) {
-    if(START_N) {
-      for(i = 88; i <= 90; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // elf
-      }
-    }
-    if(START_H) {
-      for(i = 96; i <= 98; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // elf
-      }
-    }
-  }
-  if(index[17] == 1) {
-    if(START_N) {
-      for(i = 99; i <= 104; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // twaalf
-      }
-    }
-    if(START_H) {
-      for(i = 104; i <= 109; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // twaalf
-      }
-    }
-  }
-  if(index[18] == 1) {
-    if(START_N) {
-      for(i = 110; i <= 112; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // uur
-      }
-    }
-    if(START_H) {
-      for(i = 118; i <= 120; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // uur
-      }
-    }
-  }
-  if(index[19] == 1) {
-    if(START_N) {
-      for(i = 8; i <= 10; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // het
-      }
-    }
-    if(START_H) {
-      for(i = 0; i <= 2; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // het
-      }
-    }
-    if(START_N) {
-      for(i = 5; i <= 6; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // is
-      }
-    }
-    if(START_H) {
-      for(i = 4; i <= 5; i++) {
-        leds[i] = CHSV(hsv_hue, hsv_sat, hsv_val); // is
-      }
-    }
-  }
-  FastLED.show();
+  // Write RGB values to LEDs
+  printScreen(mirrorDisplay, boustrofedon);
 
   /* Send current time through serial interface */
-  Serial.print("Time has been updated. The displayed time is now ");
-  Serial.print(hour());   Serial.print(":");
-  Serial.print(minute()); Serial.print(":");
-  Serial.print(second()); Serial.println(".");
+  Serial.print(F("Clock screen was refreshed. System date/time is "));
+  Serial.print(year());   Serial.print(F("-"));
+  Serial.print(month());  Serial.print(F("-"));
+  Serial.print(day());    Serial.print(F(", "));
+  Serial.print(hour());   Serial.print(F(":"));
+  Serial.print(minute()); Serial.print(F(":"));
+  Serial.print(second()); Serial.print(F(". "));
+  Serial.print(F("Brightness is ")); Serial.print(brightness); Serial.println(F("."));
 
   /* Reset the index array */
   for(i = 0; i <= 19; i++) {
     index[i] = 0;
+  }
+
+  // Register update time
+  updateTime = millis();
+}
+
+void printScreen(bool mirror, bool boustrofedon) {
+  if(mirror) {
+    // We need to mirror the screen if the LED with index 0 is not located at the left side of the screen
+    // Set all output LEDs to black first
+    for(i = 0; i < numLeds; i++) {
+      leds_p[i] = CRGB::Black;
+    }
+
+    if(boustrofedon) {
+      // If the LEDs are arranged in boustrofedon, we need not mirror every row, but just the even ones (and 0)
+      for(i = 0; i < 11; i++) {
+        if(i % 2 == 0) {
+          // Mirror the even ones
+          for(j = 0; j < 11; j++) {
+            leds_p[i*11+j] = leds[i*11+10-j];
+          }
+        } else {
+          // Copy the uneven ones as is
+          for(j = 0; j < 11; j++) {
+            leds_p[i*11+j] = leds[i*11+j];
+          }
+        }
+      }
+    } else {
+      // If the LEDs are not arranged in boustrofedon, we need to mirror every row
+      for(i = 0; i < 11; i++) {
+        for(j = 0; j < 11; j++) {
+            leds_p[i*11+j] = leds[i*11+10-j];
+        }
+      }
+    }
+  } else {
+    if(boustrofedon) {
+      // Boustrofedon rearrangement without mirroring
+      for(i = 0; i < 11; i++) {
+        if(i % 2 == 0) {
+          // Copy the even ones as is
+          for(j = 0; j < 11; j++) {
+            leds_p[i*11+j] = leds[i*11+j];
+          }
+        } else {
+          // Mirror the uneven ones
+          for(j = 0; j < 11; j++) {
+            leds_p[i*11+j] = leds[i*11+10-j];
+          }
+        }
+      }
+    } else {
+      // If the LEDs are arranged in standard matrix form, we need not rearrange anything
+      for(i = 0; i < numLeds; i++) {
+        leds_p[i] = leds[i];
+      }
+    }
+  }
+
+  // Print output to screen
+  FastLED.show();
+}
+
+// RTClib function extensions
+int year() {
+  if(!softRTC) {
+    DateTime now = rtc.now();
+    return now.year();
+  }
+  else {
+    DateTime now = softrtc.now();
+    return now.year();
+  }
+}
+
+int month() {
+  if(!softRTC) {
+    DateTime now = rtc.now();
+    return now.month();
+  } else {
+    DateTime now = softrtc.now();
+    return now.month();
+  }
+}
+
+int day() {
+  if(!softRTC) {
+    DateTime now = rtc.now();
+    return now.day();
+  } else {
+    DateTime now = softrtc.now();
+    return now.day();
+  }
+}
+
+int hour() {
+  if(!softRTC) {
+    DateTime now = rtc.now();
+    return now.hour();
+  } else {
+    DateTime now = softrtc.now();
+    return now.hour();
+  }
+}
+
+int minute() {
+  if(!softRTC) {
+    DateTime now = rtc.now();
+    return now.minute();
+  } else {
+    DateTime now = softrtc.now();
+    return now.minute();
+  }
+}
+
+int second() {
+  if(!softRTC) {
+    DateTime now = rtc.now();
+    return now.second();
+  } else {
+    DateTime now = softrtc.now();
+    return now.second();
+  }
+}
+
+int hourFormat12() {
+  if(!softRTC) {
+    DateTime now = rtc.now();
+    
+    if(now.hour() > 12) {
+      return now.hour() - 12;
+    } else 
+    if(now.hour() == 0) {
+      return 12;
+    } else {
+      return now.hour();
+    }
+  } else {
+    DateTime now = softrtc.now();
+
+    if(now.hour() > 12) {
+      return now.hour() - 12;
+    } else 
+    if(now.hour() == 0) {
+      return 12;
+    } else {
+      return now.hour();
+    }
   }
 }

@@ -6,12 +6,14 @@
 long buttonTime = 0;
 int interval = 1000;
 
-int incrementPin = 9;
-int decrementPin = 10;
-int colorPin = 11;
+int incrementPin = A2;
+int decrementPin = A3;
+int colorPin = A1;
+
+int a, b, c;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   pinMode(incrementPin, INPUT);
   pinMode(decrementPin, INPUT);
@@ -19,24 +21,11 @@ void setup() {
 }
 
 void loop() {
-  if((digitalRead(incrementPin) == 0) && (millis() - buttonTime > interval)){
-    buttonTime = millis();
-    delay(500);
-    if((digitalRead(incrementPin) == 0) && (digitalRead(decrementPin) == 1)) {   
-      Serial.println("Registered increment button press");
-    }
-  }
+  a = analogRead(colorPin);
+  b = analogRead(incrementPin);
+  c = analogRead(decrementPin);
 
-  if((digitalRead(incrementPin) == 1) && (millis() - buttonTime > interval)){
-    buttonTime = millis();
-    delay(500);
-    if((digitalRead(incrementPin) == 1) && (digitalRead(decrementPin) == 0)) {
-      Serial.println("Registered decrement button press");
-    }
-  }
-
-  if((digitalRead(colorPin) == 0) && (millis() - buttonTime > interval)) {
-    buttonTime = millis();
-    Serial.println("Registered colour button press");
-  }
+  Serial.print(a); Serial.print("\t");
+  Serial.print(b); Serial.print("\t");
+  Serial.println(c);
 }
