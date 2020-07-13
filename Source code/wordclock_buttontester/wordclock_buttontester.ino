@@ -6,9 +6,9 @@
 long buttonTime = 0;
 int interval = 1000;
 
+int colorPin = A1;
 int incrementPin = A2;
 int decrementPin = A3;
-int colorPin = A1;
 
 int a, b, c;
 

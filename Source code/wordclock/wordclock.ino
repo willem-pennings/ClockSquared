@@ -14,7 +14,7 @@ RTC_DS3231 rtc;
 RTC_Millis softrtc;
 FASTLED_USING_NAMESPACE
 
-const bool mirrorDisplay    = false;
+const bool mirrorDisplay    = true;
 const bool boustrofedon     = true;
                         
 /* LED strip and grid definitions */
@@ -104,8 +104,7 @@ void setup() {
   digitalWrite(buttonLedPin, HIGH);
 
   // Initialize LED strip
-  //FastLED.addLeds<LED_TYPE, dataPin, COLOR_ORDER>(leds_p, numLeds).setCorrection(TypicalLEDStrip);
-  FastLED.addLeds<APA102, 2, 3, BGR>(leds_p, numLeds).setCorrection(TypicalLEDStrip);
+  FastLED.addLeds<LED_TYPE, dataPin, COLOR_ORDER>(leds_p, numLeds).setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(brightness);
 
   if(rtc.lostPower()) {
